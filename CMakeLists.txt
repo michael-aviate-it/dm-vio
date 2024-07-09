@@ -21,6 +21,7 @@ find_package(GTSAM REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 find_package(realsense2 QUIET)
+find_package(depthai CONFIG REQUIRED)
 
 IF(${Boost_VERSION} GREATER_EQUAL 106500)
     message("Building with stacktrace support.")
@@ -198,6 +199,13 @@ if (OpenCV_FOUND AND Pangolin_FOUND)
 		set(dmvio_t265_SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/live/RealsenseT265.cpp)
 		add_executable(dmvio_t265 ${PROJECT_SOURCE_DIR}/src/main_dmvio_t265.cpp ${dmvio_t265_SOURCE_FILES})
 		target_link_libraries(dmvio_t265 dmvio ${DMVIO_LINKED_LIBRARIES} realsense2::realsense2)
+	endif()
+
+	if(depthai_FOUND)
+		message("--- compiling dmvio_luxonis.")
+		set(dmvio_luxonis_SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/live/Luxonis.cpp)
+		add_executable(dmvio_luxonis ${PROJECT_SOURCE_DIR}/src/main_dmvio_luxonis.cpp ${dmvio_luxonis_SOURCE_FILES})
+		target_link_libraries(dmvio_luxonis dmvio ${DMVIO_LINKED_LIBRARIES} depthai::opencv)
 	endif()
 
 else()
