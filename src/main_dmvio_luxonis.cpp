@@ -36,6 +36,8 @@
 #include "IOWrapper/ImageDisplay.h"
 #include "IOWrapper/Output3DWrapper.h"
 
+#include "util/Undistort.h"
+
 #include "dso/util/globalCalib.h"
 #include "dso/util/globalFuncs.h"
 #include "dso/util/settings.h"
@@ -76,11 +78,13 @@ std::unique_ptr<Undistort> undistorter;
 std::unique_ptr<dmvio::DatasetSaver> datasetSaver;
 std::string saveDatasetPath = "";
 
+// ************************************************************************************
 void my_exit_handler(int s) {
 	printf("Caught signal %d\n", s);
 	exit(1);
 }
 
+// ************************************************************************************
 void exitThread() {
 	struct sigaction sigIntHandler;
 	sigIntHandler.sa_handler = my_exit_handler;
@@ -92,18 +96,30 @@ void exitThread() {
 		pause();
 }
 
-void run(IOWrap::PangolinDSOViewer *viewer) {
+// ************************************************************************************
+void run(IOWrap::PangolinDSOViewer *viewer, Undistort *undistorter) {
 	std::cout << "run(IOWrap::PangolinDSOViewer *viewer)" << std::endl;
 
 	bool linearizeOperation = false;
 	auto fullSystem = std::make_unique<FullSystem>(linearizeOperation, imuCalibration, imuSettings);
+
+	if (setting_photometricCalibration > 0 && undistorter->photometricUndist == nullptr) {
+		printf("ERROR: dont't have photometric calibation. Need to use commandline options mode=1 or mode=2 ");
+		exit(1);
+	}
+
+	if (undistorter->photometricUndist != nullptr) {
+		fullSystem->setGammaFunction(undistorter->photometricUndist->getG());
+	}
+
+	fullSystem->setGammaFunction(0);
 
 	if (viewer != 0) {
 		fullSystem->outputWrapper.push_back(viewer);
 	}
 
 	dmvio::FrameSkippingStrategy frameSkipping(frameSkippingSettings);
-	// frameSkipping registers as an outputWrapper to get notified of changes of the system status.
+
 	fullSystem->outputWrapper.push_back(&frameSkipping);
 
 	int image_index = 0;
@@ -111,7 +127,6 @@ void run(IOWrap::PangolinDSOViewer *viewer) {
 
 	std::cout << "while (true)" << std::endl;
 	while (true) {
-		// Skip the first few frames if the start variable is set.
 		if (start > 0 && image_index < start) {
 			auto pair = frameContainer.getImageAndIMUData();
 
@@ -119,29 +134,32 @@ void run(IOWrap::PangolinDSOViewer *viewer) {
 			continue;
 		}
 
-
 		// std::cout << "getImageAndIMUData" << std::endl;
 		auto pair = frameContainer.getImageAndIMUData(frameSkipping.getMaxSkipFrames(frameContainer.getQueueSize()));
 
 		fullSystem->addActiveFrame(pair.first.get(), image_index, &(pair.second), nullptr);
 
-		// std::cout << "initFailed" << std::endl;
-		if (fullSystem->initFailed || setting_fullResetRequested) {
-			if (image_index - lastResetIndex < 250 || setting_fullResetRequested) {
-				printf("RESETTING!\n");
-				std::vector<IOWrap::Output3DWrapper *> wraps = fullSystem->outputWrapper;
-				fullSystem.reset();
-				for (IOWrap::Output3DWrapper *output_wrapper : wraps)
-					output_wrapper->reset();
 
-				fullSystem = std::make_unique<FullSystem>(linearizeOperation, imuCalibration, imuSettings);
+		// fix: commenting this out makes the init much faster!
+		// if (fullSystem->initFailed || setting_fullResetRequested) {
+		// 	std::cout << "initFailed" << std::endl;
+		// 	if (image_index - lastResetIndex < 250 || setting_fullResetRequested) {
+		// 		printf("RESETTING!\n");
+		// 		std::vector<IOWrap::Output3DWrapper *> wraps = fullSystem->outputWrapper;
+		// 		fullSystem.reset();
+		// 		for (IOWrap::Output3DWrapper *output_wrapper : wraps)
+		// 			output_wrapper->reset();
 
-				fullSystem->outputWrapper = wraps;
+		// 		fullSystem = std::make_unique<FullSystem>(linearizeOperation, imuCalibration, imuSettings);
+		// 		if (undistorter->photometricUndist != nullptr) {
+		// 			fullSystem->setGammaFunction(undistorter->photometricUndist->getG());
+		// 		}
+		// 		fullSystem->outputWrapper = wraps;
 
-				setting_fullResetRequested = false;
-				lastResetIndex = image_index;
-			}
-		}
+		// 		setting_fullResetRequested = false;
+		// 		lastResetIndex = image_index;
+		// 	}
+		// }
 
 		if (viewer != nullptr && viewer->shouldQuit()) {
 			std::cout << "User closed window -> Quit!" << std::endl;
@@ -175,6 +193,7 @@ void run(IOWrap::PangolinDSOViewer *viewer) {
 	printf("EXIT NOW!\n");
 }
 
+// ************************************************************************************
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
 
@@ -208,11 +227,8 @@ int main(int argc, char **argv) {
 	{
 		std::ofstream settingsStream;
 		settingsStream.open(imuSettings.resultsPrefix + "usedSettingsdso.txt");
-		// settingsUtil->printAllSettings(settingsStream);
+		settingsUtil->printAllSettings(settingsStream);
 	}
-
-	imuCalibration.loadFromFile(mainSettings.imuCalibFile);
-
 
 	// hook crtl+C.
 	boost::thread exThread = boost::thread(exitThread);
@@ -228,12 +244,23 @@ int main(int argc, char **argv) {
 	std::cout << "Saving camera calibration to " << calibSavePath << "\n";
 	dmvio::Luxonis luxonis(frameContainer, calibSavePath, datasetSaver.get());
 
+	luxonis.start();
+
+	std::cout << "mainSettings.calib" << std::endl;
+	std::string usedCalib = calibSavePath;
+	if (mainSettings.calib != "") {
+		usedCalib = mainSettings.calib;
+		std::cout << "Using custom camera calibration (instead of factory calibration): " << mainSettings.calib << "\n";
+	}
+	
+	std::cout << "camchainSavePath" << std::endl;
 	if (camchainSavePath != "") {
 		std::cout << "Saving T_cam_imu to: " << camchainSavePath << std::endl;
 		luxonis.imuCalibration->saveToFile(camchainSavePath);
 	}
 
-	std::unique_ptr<Undistort> undistorter(Undistort::getUndistorterForFile(mainSettings.calib, mainSettings.gammaCalib, mainSettings.vignette));
+	std::cout << "undistorter" << std::endl;
+	std::unique_ptr<Undistort> undistorter(Undistort::getUndistorterForFile(usedCalib, mainSettings.gammaCalib, mainSettings.vignette));
 	luxonis.setUndistorter(undistorter.get());
 
 	std::cout << "setGlobalCalib" << std::endl;
@@ -243,21 +270,31 @@ int main(int argc, char **argv) {
 		undistorter->getK().cast<float>()
 	);
 
-	luxonis.start();
+	// std::cout << "mainSettings.imuCalibFile" << std::endl;
+	// if (mainSettings.imuCalibFile != "") {
+		imuCalibration.loadFromFile(mainSettings.imuCalibFile);
+	// } else {
+	// 	std::cout << "Using factory IMU calibration!" << std::endl;
+	// 	imuCalibration = *(luxonis.imuCalibration);
+	// }
 
-	std::cout << "PangolinDSOViewer" << std::endl;
-	IOWrap::PangolinDSOViewer *viewer = new IOWrap::PangolinDSOViewer(wG[0], hG[0], false, settingsUtil, normalizeCamSize);
+	// if (!disableAllDisplay) {
+		std::cout << "PangolinDSOViewer" << std::endl;
+		IOWrap::PangolinDSOViewer *viewer = new IOWrap::PangolinDSOViewer(wG[0], hG[0], false, settingsUtil, normalizeCamSize);
 
-	std::cout << "runThread" << std::endl;
-	boost::thread runThread = boost::thread(boost::bind(run, viewer));
+		std::cout << "runThread" << std::endl;
+		boost::thread runThread = boost::thread(boost::bind(run, viewer, undistorter.get()));
 
-	viewer->run();
+		viewer->run();
 
-	delete viewer;
+		delete viewer;
 
-	// Make sure that the destructor of FullSystem, etc. finishes, so all log
-	// files are properly flushed.
-	runThread.join();
+		// Make sure that the destructor of FullSystem, etc. finishes, so all log
+		// files are properly flushed.
+		runThread.join();
+	// } else {
+	// 	run(0, undistorter.get());
+	// }
 
 	return 0;
 }

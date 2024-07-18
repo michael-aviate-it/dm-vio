@@ -32,38 +32,42 @@
 #include "util/Undistort.h"
 #include "DatasetSaver.h"
 
-namespace dmvio
-{
-// Class for interacting with the Luxonis camera.
-class Luxonis
-{
-public:
-    // Images and IMU data will be passed into frameContainer which can be used to get synchronized image and IMU data.
-    // Factory calibration will be saved to cameraCalibSavePath.
-    // If datasetSaver is set, the IMU data and images will also be saved to file.
-    Luxonis(FrameContainer& frameContainer, std::string cameraCalibSavePath, DatasetSaver* datasetSaver);
+namespace dmvio {
+    class Luxonis {
+        public:
+            Luxonis(FrameContainer& frameContainer, std::string cameraCalibSavePath, DatasetSaver* datasetSaver);
 
-    // Start receiving data.
-    void start();
+            void start();
 
-    // Set the undistorter to use. Until this is set, no images are passed forward to the frameContainer.
-    void setUndistorter(dso::Undistort* undistort);
+            void setUndistorter(dso::Undistort* undistort);
 
-    std::unique_ptr<IMUCalibration> imuCalibration;
-private:
-    void readCalibration();
-    std::string cameraCalibSavePath;
+            std::unique_ptr<IMUCalibration> imuCalibration;
 
-    std::atomic<bool> calibrationRead{false};
+            void callback_camera(std::vector<std::shared_ptr<dai::ImgFrame>> img_frames);
+            void callback_imu(std::shared_ptr<dai::IMUData> imu_data);
 
-    // IMU interpolator will take care of creating "fake measurements" to synchronize the sensors by interpolating IMU data.
-    IMUInterpolator imu_interpolator;
-    dso::Undistort* undistorter = nullptr;
-    double lastImgTimestamp = -1.0;
+        private:
+            dai::Pipeline pipeline;
 
-    DatasetSaver* saver;
-};
+            std::chrono::time_point<std::chrono::steady_clock> start_time_camera;
+            uint16_t fps_counter_camera = 0;
 
-}
+            std::chrono::time_point<std::chrono::steady_clock> start_time_imu;
+            uint16_t fps_counter_imu = 0;
+
+            std::string cameraCalibSavePath;
+
+            std::atomic<bool> calibrationRead{false};
+
+            IMUInterpolator imu_interpolator;
+            dso::Undistort* undistorter = nullptr;
+            double lastImgTimestamp = -1.0;
+
+            DatasetSaver* saver;
+
+            void readCalibration();
+    }; // class Luxonis
+
+} // namespace dmvio
 
 #endif // DMVIO_LUXONIS_H
